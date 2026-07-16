@@ -34,66 +34,45 @@ export class BountiesService {
   }
 
   /**
-   * List bounties with server-side pagination.
-   *
-   * Uses `findAndCount` so we can return total metadata without a second
-   * query. Backward compatible: when called with no arguments, the response
-   * still contains a `data` array (wrapped) but the shape differs from a bare
-   * array — controllers that need the bare array should call this with a
-   * small helper. The default page size is 20, max 100 (enforced by the
-   * PaginationQueryDto via class-validator).
+   * List bounties with server-side pagination + filters (owner, contributor, status).
    */
   async findAll(
     pagination: PaginationQueryDto = {},
   ): Promise<PaginatedResponse<Bounty>> {
-    const page = pagination.page ?? 1;
-    const limit = pagination.limit ?? 20;
-    const [data, total] = await this.bounties.findAndCount({
-      order: { createdAt: 'DESC' },
-      skip: toSkip(page, limit),
-      take: limit,
-    });
+    const { page = 1, limit = 20, owner, contributor, status } = pagination;
+
+    const queryBuilder = this.bounties.createQueryBuilder('bounty');
+
+    if (owner) {
+      queryBuilder.andWhere('bounty.owner = :owner', { owner });
+    }
+
+    if (contributor) {
+      queryBuilder.andWhere('bounty.contributors LIKE :contributor', {
+        contributor: `%${contributor}%`,
+      });
+    }
+
+    if (status) {
+      queryBuilder.andWhere('bounty.status = :status', { status });
+    }
+
+    queryBuilder.orderBy('bounty.createdAt', 'DESC');
+
+    const [data, total] = await queryBuilder
+      .skip(toSkip(page, limit))
+      .take(limit)
+      .getManyAndCount();
+
     return PaginatedResponse.of(data, total, page, limit);
   }
 
+  /**
+   * Helper method used by me.controller.ts for /me/bounties
+   */
+  async findByOwner(ownerId: string) {
+    return this.findAll({ owner: ownerId });
+  }
+
   async findOne(id: string) {
-    const bounty = await this.bounties.findOne({ where: { id } });
-    if (!bounty) {
-      throw new NotFoundException('Bounty not found');
-    }
-    return bounty;
-  }
-
-  async update(id: string, dto: UpdateBountyDto) {
-    const bounty = await this.findOne(id);
-    Object.assign(bounty, {
-      ...dto,
-      description: dto.description === undefined ? bounty.description : sanitizeDescription(dto.description),
-      rewardAmount: dto.rewardAmount !== undefined ? BigInt(dto.rewardAmount) : bounty.rewardAmount,
-      deadline: dto.deadline === undefined ? bounty.deadline : new Date(dto.deadline),
-    });
-    return this.bounties.save(bounty);
-  }
-
-  async remove(id: string) {
-    const bounty = await this.findOne(id);
-    await this.bounties.softRemove(bounty);
-    return { deleted: true };
-  }
-
-  async restore(id: string) {
-    // softRemove sets deletedAt, restore unsets it
-    const bounty = await this.bounties.findOne({
-      where: { id },
-      withDeleted: true,
-    });
-    if (!bounty) {
-      throw new NotFoundException('Bounty not found');
-    }
-    if (bounty.deletedAt === null) {
-      return bounty;
-    }
-    await this.bounties.restore(id);
-    return this.findOne(id);
-  }
-}
+    const bounty = await this.bounties.findOne({ where: {
